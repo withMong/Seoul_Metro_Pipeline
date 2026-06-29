@@ -38,6 +38,56 @@
 
 ## 아키텍처
 
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 16, 'rankSpacing': 30}, 'themeVariables': {'fontSize':'11px'}}}%%
+flowchart LR
+  API["수집 API"] --> K(["Kafka"])
+
+  subgraph RT["① 실시간 적재"]
+    direction TB
+    K --> F1["Flink<br>적재(fan-out)"]
+    F1 --> L0L["Paimon L0<br>bronze · log"]
+    F1 --> L0C["Paimon L0<br>bronze · current"]
+    L0L --> F2["Flink<br>도착 추출"]
+    F2 --> L1["Paimon L1<br>silver · arrival"]
+  end
+
+  subgraph ALARM["③ 알림"]
+    direction TB
+    K --> DQ["Flink<br>null 집계"]
+    L0C --> WD["watchdog<br>무수신"]
+    DQ --> SLK["Slack"]
+    WD --> SLK
+  end
+
+  subgraph BATCH["② 배치"]
+    direction TB
+    L1 --> SP["Spark<br>WAP"]
+    SP -. audit .-> GE{{"GE"}}
+    SP --> G1["Iceberg L2<br>gold · headway"]
+    SP --> G2["Iceberg L2<br>gold · freshness"]
+  end
+
+  G1 --> SR["StarRocks"]
+  G2 --> SR
+  SR --> BI["Streamlit BI"]
+  L0L -. 저장 .-> MIN[("MinIO")]
+  G1 -. 저장 .-> MIN
+
+  classDef rt fill:#CDEBF7,stroke:#4FA3D1,color:#0B3A52;
+  classDef bt fill:#D8EFB6,stroke:#7FB23E,color:#274A12;
+  classDef st fill:#EBDCBE,stroke:#B5915A,color:#4A3A1E;
+  class API,K,F1,L0L,L0C,F2,L1,DQ,WD,SLK rt
+  class SP,GE,G1,G2 bt
+  class SR,BI,MIN st
+  style RT fill:#FFFFFF,stroke:#AAB,stroke-dasharray:4 4
+  style ALARM fill:#FFFFFF,stroke:#AAB,stroke-dasharray:4 4
+  style BATCH fill:#FFFFFF,stroke:#AAB,stroke-dasharray:4 4
+```
+
+<details>
+<summary>텍스트(ASCII) 버전</summary>
+
 ```
 [실시간 위치 API]  1·2·9호선, 러시아워 윈도우 폴링(30~40s)
        │ producer
@@ -60,6 +110,8 @@
        ▼
      Streamlit BI  (불안정 역 Top N + freshness 패널)
 ```
+
+</details>
 
 메달리온(L0 원본 → L1 정제 → L2 집계 결정 마트) 구조. 다이어그램 소스: [`docs/architecture.mermaid`](docs/architecture.mermaid).
 
@@ -129,4 +181,4 @@ seoul-metro-pipeline/
 ├─ labs/                     # 파이프라인 단계별 코드 (번호 = 데이터 흐름 순서)
 │  ├─ 03-kafka-producer/     # 실시간 위치 API → Kafka
 │  ├─ 04-flink-paimon/       # Kafka → Paimon L0 (log/current) 적재
-│  ├�
+│  ├�
