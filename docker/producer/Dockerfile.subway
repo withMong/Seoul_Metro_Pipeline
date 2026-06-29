@@ -1,0 +1,11 @@
+FROM python:3.12-slim
+
+ARG CONFLUENT_KAFKA_VERSION=2.14.0
+
+# confluent-kafka(전송) + requests(API 호출) + PyMySQL(watchdog 가 StarRocks→position_current 시드)
+RUN pip install --no-cache-dir \
+    "confluent-kafka==${CONFLUENT_KAFKA_VERSION}" \
+    "requests==2.32.3" \
+    "PyMySQL==1.1.1"
+
+WORKDIR /workspace
