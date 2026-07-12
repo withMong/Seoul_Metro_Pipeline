@@ -1,0 +1,16 @@
+# 서울 지하철 수집 창 (KST) — producer 를 창마다 start/stop.
+# VM 타임존을 Asia/Seoul 로 맞춘 뒤(setup-vm.sh) `crontab -e` 로 아래를 붙여넣는다.
+#
+# 쿼터 계산: 3노선 × 30초 = 시간당 360콜. 아래 4창 합계 2시간20분 ≈ 하루 840콜 (< 1,000 안전).
+#   출근 08:00–08:40 / 점심 12:00–12:30 / 퇴근 18:00–18:40 / 밤 23:00–23:30
+# 창을 늘리거나 노선을 추가하려면 2번째 API 키로 분산(README 참고).
+#
+# ┌ 분  ┌ 시            (요일/일/월은 * = 매일)
+0  8  * * *   docker start subway-producer
+40 8  * * *   docker stop  subway-producer
+0  12 * * *   docker start subway-producer
+30 12 * * *   docker stop  subway-producer
+0  18 * * *   docker start subway-producer
+40 18 * * *   docker stop  subway-producer
+0  23 * * *   docker start subway-producer
+30 23 * * *   docker stop  subway-producer
