@@ -9,6 +9,18 @@ set -euo pipefail
 echo "== 1) 타임존 KST =="
 sudo timedatectl set-timezone Asia/Seoul
 
+echo "== 1b) 스왑 2GB (E2.1.Micro RAM 1GB 대응 — Kafka OOM 방지) =="
+if ! sudo swapon --show | grep -q /swapfile; then
+  sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile
+  sudo swapon /swapfile
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+  echo "  스왑 활성화 완료:"; sudo swapon --show
+else
+  echo "  스왑 이미 있음"
+fi
+
 echo "== 2) 기본 패키지 =="
 sudo apt-get update -y
 sudo apt-get install -y ca-certificates curl git

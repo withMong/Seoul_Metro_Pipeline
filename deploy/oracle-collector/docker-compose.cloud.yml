@@ -36,6 +36,9 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_RETENTION_HOURS: 168        # ★ 7일 보관 (PC 꺼져 있어도 안전)
       KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # E2.1.Micro(RAM 1GB) 대응: JVM 힙을 작게 고정 (기본 1GB면 OOM). 스왑은 setup-vm.sh 에서 2GB.
+      KAFKA_HEAP_OPTS: "-Xmx320m -Xms320m"
+    mem_limit: 640m                          # 컨테이너 상한(힙 320m + 여유). 1GB 中 producer/OS 몫 남김
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
@@ -58,6 +61,7 @@ services:
       kafka:
         condition: service_healthy
     entrypoint: ["python", "/workspace/labs/03-kafka-producer/subway_producer.py"]
+    mem_limit: 256m                          # 1GB VM 대응: producer 상한
     environment:
       KAFKA_BOOTSTRAP_SERVER: kafka:19092
       KAFKA_TOPIC: ${KAFKA_TOPIC:-subway-events}
