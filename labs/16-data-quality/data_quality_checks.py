@@ -36,6 +36,8 @@ def expectations_for(table_key: str) -> list:
             gxe.ExpectColumnValuesToBeInSet(
                 column="time_band", value_set=["새벽", "출근", "점심", "퇴근", "밤"]
             ),
+            gxe.ExpectColumnValuesToNotBeNull(column="svc_type"),
+            gxe.ExpectColumnValuesToBeInSet(column="svc_type", value_set=["전체", "급행", "완행"]),
             gxe.ExpectColumnValuesToBeBetween(column="cv", min_value=0, max_value=3),
             gxe.ExpectColumnValuesToBeBetween(column="p50_sec", min_value=1, max_value=900),
             gxe.ExpectColumnValuesToBeBetween(column="headway_samples", min_value=1),
@@ -90,12 +92,12 @@ def run_custom_checks(spark, ns: str = "staging") -> list[dict]:
     ).first()
     checks.append({"check": "mean_sec > 0", "checked": r["n"], "violations": r["v"]})
 
-    # (역,방향,시간대,요일) 조합 유일성 = 마트 grain 보장
+    # (역,방향,서비스,시간대,요일) 조합 유일성 = 마트 grain 보장  ([개선#1] svc_type 포함)
     r = spark.sql(
         f"""
         SELECT COUNT(*) AS n, SUM(c - 1) AS v FROM (
           SELECT COUNT(*) AS c FROM {HW}
-          GROUP BY line, statn_id, direction, time_band, day_type
+          GROUP BY line, statn_id, direction, svc_type, time_band, day_type
         )
         """
     ).first()
