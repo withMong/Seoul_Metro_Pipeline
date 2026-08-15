@@ -38,10 +38,13 @@ def hw_filters() -> str:
     st.sidebar.header("필터")
     line = st.sidebar.selectbox("노선", ["(전체)", "1호선", "2호선", "9호선"])
     band = st.sidebar.selectbox("시간대", ["(전체)", "출근", "점심", "퇴근", "새벽", "밤"])
+    # [개선#1] 서비스 분리: 기본 '전체'(급행+완행 섞인 실제 스트림, 개선 전과 동일).
+    #   '급행'/'완행'을 고르면 같은 서비스끼리의 배차만 본다(1·9호선만 분리됨).
+    svc = st.sidebar.selectbox("서비스", ["전체", "급행", "완행"])
     min_n = st.sidebar.slider("최소 표본 수", 3, 30, 10)
     lf = "" if line == "(전체)" else f" AND line = '{line}'"
     bf = "" if band == "(전체)" else f" AND time_band = '{band}'"
-    return f"headway_samples >= {min_n}{lf}{bf}"
+    return f"headway_samples >= {min_n} AND svc_type = '{svc}'{lf}{bf}"
 
 
 def inject_css() -> None:
