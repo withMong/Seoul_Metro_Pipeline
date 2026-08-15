@@ -15,10 +15,11 @@ import sys
 from pyspark.sql import SparkSession
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from line_rules import BRANCH_2, EDGE_1, sql_in  # noqa: E402
+from line_rules import BRANCH_2, EDGE_1, HOLIDAYS, sql_in  # noqa: E402
 
 BRANCH_IN = sql_in(BRANCH_2)
 EDGE_IN = sql_in(EDGE_1)
+HOLIDAY_IN = sql_in(HOLIDAYS)
 MAX_HEADWAY_SEC = 900
 
 HW_STAGE = "iceberg.staging.headway_by_station_tod"
@@ -60,15 +61,21 @@ def write(spark: SparkSession) -> None:
     spark.sql(
         f"""
         CREATE OR REPLACE TEMP VIEW arrivals AS
-        SELECT line, statn_id, statn_nm, updn_line, arrival_ts,
+        SELECT line, statn_id, statn_nm, updn_line, arrival_ts, direct_at,
           CASE updn_line WHEN '0' THEN '상행' WHEN '1' THEN '하행' ELSE '미상' END AS direction,
+          CASE WHEN direct_at='1' THEN '급행' ELSE '완행' END AS svc,
           CASE WHEN line='2호선' AND statn_nm IN ({BRANCH_IN}) THEN '지선' ELSE '본선' END AS branch,
           CASE WHEN hour(arrival_ts) BETWEEN 5 AND 6  THEN '새벽'
                WHEN hour(arrival_ts) BETWEEN 7 AND 9  THEN '출근'
                WHEN hour(arrival_ts) BETWEEN 10 AND 16 THEN '점심'
                WHEN hour(arrival_ts) BETWEEN 17 AND 19 THEN '퇴근'
                ELSE '밤' END AS time_band,
-          CASE dayofweek(arrival_ts) WHEN 1 THEN '휴일' WHEN 7 THEN '토요일' ELSE '평일' END AS day_type
+          CASE
+            WHEN date_format(arrival_ts,'yyyy-MM-dd') IN ({HOLIDAY_IN}) THEN '휴일'
+            WHEN dayofweek(arrival_ts)=1 THEN '휴일'
+            WHEN dayofweek(arrival_ts)=7 THEN '토요일'
+            ELSE '평일'
+          END AS day_type
         FROM paimon.silver.subway_arrival_events WHERE updn_line IN ('0','1')
         """
     )
@@ -76,6 +83,10 @@ def write(spark: SparkSession) -> None:
     #   nonpos      = 음수/0 (추정역전·중복) → 이상치, 통계에서 제외
     #   gap_missing = MAX 초과 (열차 스킵/윈도우 경계) → '결측'(0 아님), 통계에서 제외
     #   valid       = 0 < h <= MAX → P50/P90/CV 계산에 사용
+    # [개선#1] svc_type 3관점(전체/급행/완행): 같은 서비스끼리 연속 간격을 따로 재서
+    #   같은 역 불안정이 각 서비스의 불규칙 때문인지 급행·완행 섞임 때문인지 분해.
+    #   급행 존재 노선(1·9호선)만 분리 — 2호선 등은 '전체'만.
+    spark.sql("CREATE OR REPLACE TEMP VIEW express_lines AS SELECT DISTINCT line FROM arrivals WHERE svc='급행'")
     spark.sql(
         f"""
         CREATE OR REPLACE TEMP VIEW headways_cls AS
@@ -89,11 +100,18 @@ def write(spark: SparkSession) -> None:
             ELSE 'valid'
           END AS status
         FROM (
-          SELECT line, statn_id, statn_nm, direction, branch, time_band, day_type,
+          SELECT line, statn_id, statn_nm, direction, branch, time_band, day_type, '전체' AS svc_type,
             unix_timestamp(arrival_ts) - unix_timestamp(
               LAG(arrival_ts) OVER (PARTITION BY line, statn_id, direction ORDER BY arrival_ts)
             ) AS headway_sec
           FROM arrivals
+          UNION ALL
+          SELECT line, statn_id, statn_nm, direction, branch, time_band, day_type, svc AS svc_type,
+            unix_timestamp(arrival_ts) - unix_timestamp(
+              LAG(arrival_ts) OVER (PARTITION BY line, statn_id, direction, svc ORDER BY arrival_ts)
+            ) AS headway_sec
+          FROM arrivals
+          WHERE line IN (SELECT line FROM express_lines)
         )
         """
     )
@@ -101,25 +119,25 @@ def write(spark: SparkSession) -> None:
     spark.sql(
         """
         CREATE OR REPLACE TEMP VIEW grp_med AS
-        SELECT line, statn_id, direction, time_band, day_type,
+        SELECT line, statn_id, direction, svc_type, time_band, day_type,
                percentile_approx(headway_sec, 0.5) AS grp_p50
-        FROM headways GROUP BY line, statn_id, direction, time_band, day_type
+        FROM headways GROUP BY line, statn_id, direction, svc_type, time_band, day_type
         """
     )
     # 결측·이상 건수(같은 grain) — 0 으로 뭉개지 않고 컬럼으로 노출
     spark.sql(
         """
         CREATE OR REPLACE TEMP VIEW grp_excl AS
-        SELECT line, statn_id, direction, time_band, day_type,
+        SELECT line, statn_id, direction, svc_type, time_band, day_type,
                SUM(CASE WHEN status='gap_missing' THEN 1 ELSE 0 END) AS n_missing,
                SUM(CASE WHEN status='nonpos' THEN 1 ELSE 0 END)      AS n_anomaly
-        FROM headways_cls GROUP BY line, statn_id, direction, time_band, day_type
+        FROM headways_cls GROUP BY line, statn_id, direction, svc_type, time_band, day_type
         """
     )
     spark.sql(
         f"""
         CREATE OR REPLACE TABLE {HW_STAGE} AS
-        SELECT h.line, h.statn_id, MAX(h.statn_nm) AS statn_nm, h.direction, h.time_band, h.day_type,
+        SELECT h.line, h.statn_id, MAX(h.statn_nm) AS statn_nm, h.direction, h.svc_type, h.time_band, h.day_type,
           MAX(h.branch) AS branch,
           CASE WHEN h.time_band IN ('출근','퇴근') THEN true ELSE false END AS is_rush,
           COUNT(*) AS headway_samples,
@@ -133,11 +151,11 @@ def write(spark: SparkSession) -> None:
           COALESCE(MAX(e.n_anomaly),0) AS n_anomaly
         FROM headways h JOIN grp_med g
           ON h.line=g.line AND h.statn_id=g.statn_id AND h.direction=g.direction
-         AND h.time_band=g.time_band AND h.day_type=g.day_type
+         AND h.svc_type=g.svc_type AND h.time_band=g.time_band AND h.day_type=g.day_type
         LEFT JOIN grp_excl e
           ON h.line=e.line AND h.statn_id=e.statn_id AND h.direction=e.direction
-         AND h.time_band=e.time_band AND h.day_type=e.day_type
-        GROUP BY h.line, h.statn_id, h.direction, h.time_band, h.day_type
+         AND h.svc_type=e.svc_type AND h.time_band=e.time_band AND h.day_type=e.day_type
+        GROUP BY h.line, h.statn_id, h.direction, h.svc_type, h.time_band, h.day_type
         """
     )
 
