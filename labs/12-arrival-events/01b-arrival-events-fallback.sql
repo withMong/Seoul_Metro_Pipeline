@@ -4,6 +4,8 @@
 -- 01-arrival-events.sql 의 MATCH_RECOGNIZE 가 배치 ORDER BY 등으로 막히면 이걸 쓴다.
 -- 결과는 동일: train_no 별 시간순에서 statn_id 가 직전 행과 달라지는 행 = 새 역 도착.
 -- (MATCH_RECOGNIZE 만큼 'CEP' 스럽진 않지만 PARTITION BY train_no 로 keyed 처리 동일)
+--
+-- [개선#1] direct_at(급행 여부, 1=급행) 컬럼을 함께 실어 L2 에서 급행/완행 분리 분석에 사용.
 -- =====================================================================
 SET 'execution.runtime-mode' = 'batch';
 SET 'sql-client.execution.result-mode' = 'tableau';
@@ -19,6 +21,10 @@ CREATE CATALOG paimon_lake WITH (
 
 CREATE DATABASE IF NOT EXISTS paimon_lake.silver;
 
+-- direct_at 컬럼이 추가돼 스키마가 바뀌었으니 파생 테이블을 깨끗이 재생성한다.
+-- (arrival_events 는 bronze 에서 언제든 다시 만들 수 있는 파생 마트라 DROP 후 재적재가 안전)
+DROP TABLE IF EXISTS paimon_lake.silver.subway_arrival_events;
+
 CREATE TABLE IF NOT EXISTS paimon_lake.silver.subway_arrival_events (
   line STRING,
   train_no STRING,
@@ -26,6 +32,7 @@ CREATE TABLE IF NOT EXISTS paimon_lake.silver.subway_arrival_events (
   statn_nm STRING,
   statn_tnm STRING,
   updn_line STRING,
+  direct_at STRING,             -- 1=급행 / 그 외=완행 (개선#1)
   arrival_ts TIMESTAMP(3),
   dt STRING,
   PRIMARY KEY (line, train_no, statn_id, arrival_ts) NOT ENFORCED
@@ -35,17 +42,17 @@ CREATE TABLE IF NOT EXISTS paimon_lake.silver.subway_arrival_events (
 
 INSERT INTO paimon_lake.silver.subway_arrival_events
 SELECT
-  line, train_no, statn_id, statn_nm, statn_tnm, updn_line,
+  line, train_no, statn_id, statn_nm, statn_tnm, updn_line, direct_at,
   recptn_ts AS arrival_ts,
   DATE_FORMAT(recptn_ts, 'yyyy-MM-dd') AS dt
 FROM (
   SELECT
-    line, train_no, statn_id, statn_nm, statn_tnm, updn_line, recptn_ts,
+    line, train_no, statn_id, statn_nm, statn_tnm, updn_line, direct_at, recptn_ts,
     -- (line, train_no) keyed + event-time(recptn_ts) 정렬: 처리 순서 어긋남/노선간 train_no 충돌 방지
     LAG(statn_id) OVER (PARTITION BY line, train_no ORDER BY recptn_ts) AS prev_statn
   FROM (
     SELECT
-      line, train_no, statn_id, statn_nm, statn_tnm, updn_line,
+      line, train_no, statn_id, statn_nm, statn_tnm, updn_line, direct_at,
       CAST(recptn_dt AS TIMESTAMP(3)) AS recptn_ts
     FROM paimon_lake.bronze.subway_position_log
     -- train_no 가 null/'' 이면 시간순 시퀀스를 못 만듦(1호선 코레일 구간 등) → 도착 추출에서 제외

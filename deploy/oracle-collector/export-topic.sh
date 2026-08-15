@@ -15,4 +15,4 @@ docker exec subway-kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --timeout-ms 15000 > "$OUT" 2>/dev/null || true
 
 echo "saved $OUT  ($(wc -l < "$OUT") lines)"
-echo "로컬에서:  scp opc@<VM_PUBLIC_IP>:$(pwd)/$OUT ."
+echo "로컬에서:  scp ubuntu@<VM_PUBLIC_IP>:$(pwd)/$OUT ."
